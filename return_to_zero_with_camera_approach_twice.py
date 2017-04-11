@@ -127,7 +127,9 @@ def log_and_print(point_number,point_type,(trans,rot)):
 	writer.writerow({'point_number': point_number, 'point_type': point_type, 'x': trans[0], 'y': trans[1], 'yaw': yaw})
 	print 'point_number:',point_number,'point_type:',point_type,'x:',trans[0],'y:',trans[1],'yaw:',yaw,""
 
-with open('test_8_camera_and_odom_return_to_zero_with_approach_modified_tolerance_and_costmap_resolution.csv', 'ab') as csvfile:
+#with open('test_7_camera_and_odom_return_to_zero_with_approach.csv', 'ab') as csvfile:
+with open('test.csv', 'ab') as csvfile:
+
 
 	fieldnames = ['point_number','point_type','x','y','yaw']
 	writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -136,7 +138,7 @@ with open('test_8_camera_and_odom_return_to_zero_with_approach_modified_toleranc
 	initialize()
 	log_and_print(0,'initial_point',get_transform("map","origin"))
 
-	for i in range(1,21):
+	for i in range(1,3):
 
 		raw_input("Press enter to continue...")
 		x = random.uniform(-2,2)
@@ -210,7 +212,23 @@ with open('test_8_camera_and_odom_return_to_zero_with_approach_modified_toleranc
 		move_base_client(get_transform("map","origin_relative"))
 		time.sleep(3)
 		check_camera()
-		log_and_print(i,"camera_at_origin",get_transform("origin","pioneer"))
+		log_and_print(i,"camera_at_origin_attempt_one",get_transform("origin","pioneer"))
 		
 		# Log odometry information relative to origin
-		log_and_print(i,"odom_at_origin",lookup_odom())
+		log_and_print(i,"odom_at_origin_attempt_one",lookup_odom())
+
+		set_transform("origin","odom_frame",lookup_odom())
+		set_transform("odom_frame","origin_relative",get_transform("pioneer","origin"))
+
+		# Clear Costmaps again
+		clear_costmaps()
+
+		# Return to origin (point 0)
+		move_base_client(get_transform("map","origin_relative"))
+
+		time.sleep(3)
+		check_camera()
+		log_and_print(i,"camera_at_origin_attempt_two",get_transform("origin","pioneer"))
+		
+		# Log odometry information relative to origin
+		log_and_print(i,"odom_at_origin_attempt_two",lookup_odom())
