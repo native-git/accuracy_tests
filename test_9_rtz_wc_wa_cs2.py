@@ -3,6 +3,7 @@
 import random
 import rospy
 import tf
+from roscpp_tutorials.srv import TwoInts
 import os
 import move_base_msgs.msg
 import actionlib
@@ -12,10 +13,12 @@ import csv
 from std_srvs.srv import Empty
 import math
 
-rospy.init_node("generic_accuracy_test")
+rospy.init_node("test_8_rtz_wc_wa_cs1")
 rate = rospy.Rate(10.0)
 
 listener = tf.TransformListener()
+pub = rospy.Publisher('cmd_vel', geometry_msgs.msg.Twist, queue_size = 1)
+
 t = tf.Transformer(True, rospy.Duration(20.0))
 
 def clear_costmaps():
@@ -127,8 +130,31 @@ def log_and_print(point_number,point_type,(trans,rot)):
 	writer.writerow({'point_number': point_number, 'point_type': point_type, 'x': trans[0], 'y': trans[1], 'yaw': yaw})
 	print 'point_number:',point_number,'point_type:',point_type,'x:',trans[0],'y:',trans[1],'yaw:',yaw,""
 
+def pub_cmd_vel(v_x,v_theta):
+
+	msg = geometry_msgs.msg.Twist()
+	msg.linear.x = v_x
+	msg.angular.z = v_theta
+	pub.publish(msg)
+
+def rotate_client(theta):
+	rospy.wait_for_service('/rosaria/rotate')
+	try:
+		rotate = rospy.ServiceProxy('/rosaria/rotate', TwoInts)
+		rotate(theta,0)
+	except rospy.ServiceException, e:
+		print "Service call failed: %s"%e
+
+def move_client(x):
+	rospy.wait_for_service('/rosaria/move')
+	try:
+		move = rospy.ServiceProxy('/rosaria/move', TwoInts)
+		move(x,0)
+	except rospy.ServiceException, e:
+		print "Service call failed: %s"%e
+
 #with open('test_8_camera_and_odom_return_to_zero_with_approach_modified_tolerance_and_costmap_resolution.csv', 'ab') as csvfile:
-with open('test.csv', 'ab') as csvfile:
+with open('test_9.csv', 'ab') as csvfile:
 	
 	fieldnames = ['point_number','point_type','x','y','yaw']
 	writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -137,7 +163,7 @@ with open('test.csv', 'ab') as csvfile:
 	initialize()
 	log_and_print(0,'initial_point',get_transform("map","origin"))
 
-	for i in range(1,3):
+	for i in range(1,2):
 
 		raw_input("Press enter to continue...")
 		x = random.uniform(-2,2)
@@ -189,6 +215,30 @@ with open('test.csv', 'ab') as csvfile:
 		# Move to 0.5 meters behind origin, with same orientation
 		move_base_client(get_transform("map","approach_relative"))
 
+		# Approach twice
+		time.sleep(3)
+		
+		# Add the camera data to the tf tree
+		check_camera()
+
+		# Record camera at random point
+		log_and_print(i,"camera_at_rand",get_transform("origin","pioneer"))
+
+		# Record odometry at random point
+		log_and_print(i,"odom_at_rand",lookup_odom())
+
+		# Populate tf tree with data on where robot thinks it is based on odometry
+		set_transform("origin","odom_frame",lookup_odom())
+		set_transform("odom_frame","approach_relative",get_transform("pioneer","approach"))
+
+		# Clear Costmaps again
+		clear_costmaps()
+
+		# Move to 0.5 meters behind origin, with same orientation
+		move_base_client(get_transform("map","approach_relative"))
+
+		# First Try for cs2
+		# ------------------------------------------
 		# Sleep again
 		time.sleep(3)
 		
@@ -201,17 +251,98 @@ with open('test.csv', 'ab') as csvfile:
 
 
 		# Populate tf tree with data on where robot thinks it is based on odometry
-		set_transform("origin","odom_frame",lookup_odom())
-		set_transform("odom_frame","origin_relative",get_transform("pioneer","origin"))
-
+		set_transform("origin","odom_frame_initial",lookup_odom())
+		set_transform("odom_frame_initial","origin_relative",get_transform("pioneer","origin"))
 		# Clear Costmaps again
 		clear_costmaps()
 
+		# ---- Control Scheme 2 implementation below ----
 		# Return to origin (point 0)
-		move_base_client(get_transform("map","origin_relative"))
+		
+		# First, rotate to face target
+
+		at_origin = False
+
+		while not at_origin:
+
+			time.sleep(3)
+			check_camera()
+			set_transform("origin","odom_frame_initial",lookup_odom())
+			set_transform("odom_frame_initial","origin_relative",get_transform("pioneer","origin"))
+			(t1,r1) = get_transform("odom_frame","origin_relative")
+			x = t1[0]
+			y = t1[1]
+			rot = tf.transformations.euler_from_quaternion(r1)
+			theta_rad = rot[2]
+			theta = math.degrees(theta_rad)
+			print "x offset: " + str(x)+" y offset: " + str(y) + " theta offset: " + str(theta)
+			if abs(x) <= 0.002 and abs(y) <= 0.002 and theta <= 1:
+				at_origin = True
+			
+			else:
+				
+				facing_target = False
+
+				while not facing_target:
+
+					print "Facing target"
+					set_transform("origin","odom_frame",lookup_odom())
+					(t1,r1) = get_transform("odom_frame","origin_relative")
+					x = t1[0]
+					y = t1[1]
+					theta_rad = math.atan(y/x)
+					theta = math.degrees(theta_rad)
+					print theta
+
+					if abs(theta) <= 1:
+						facing_target = True
+					else:
+						theta = round(theta)
+						rotate_client(theta)
+						time.sleep(3)
+
+				at_target_x = False
+
+				while not at_target_x:
+
+					print "Moving to target"
+
+					set_transform("origin","odom_frame",lookup_odom())
+					(t1,r1) = get_transform("odom_frame","origin_relative")
+					x = t1[0]
+					if abs(x) <= 0.002:
+						at_target_x = True
+					else:
+						x_mm = x*1000
+						x_mm = math.floor(x_mm)
+						print x_mm
+						move_client(x_mm)
+						time.sleep(3)
+
+				at_final_orientation = False
+
+				while not at_final_orientation:
+
+					print "Rotating to final orientation"
+
+					set_transform("origin","odom_frame",lookup_odom())
+					(t1,r1) = get_transform("odom_frame","origin_relative")
+					rot = tf.transformations.euler_from_quaternion(r1)
+					theta_rad = rot[2]
+					theta = math.degrees(theta_rad)
+					print theta
+
+					if abs(theta) <= 1:
+						at_final_orientation = True
+					else:
+						theta = round(theta)
+						rotate_client(theta)
+						time.sleep(3)
+		
 		time.sleep(3)
 		check_camera()
+				
+		set_transform("odom_frame","origin_relative",get_transform("pioneer","origin"))
 		log_and_print(i,"camera_at_origin",get_transform("origin","pioneer"))
-		
 		# Log odometry information relative to origin
 		log_and_print(i,"odom_at_origin",lookup_odom())

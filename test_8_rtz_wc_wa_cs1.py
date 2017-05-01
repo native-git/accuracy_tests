@@ -12,10 +12,12 @@ import csv
 from std_srvs.srv import Empty
 import math
 
-rospy.init_node("generic_accuracy_test")
+rospy.init_node("test_8_rtz_wc_wa_cs1")
 rate = rospy.Rate(10.0)
 
 listener = tf.TransformListener()
+pub = rospy.Publisher('cmd_vel', geometry_msgs.msg.Twist, queue_size = 1)
+
 t = tf.Transformer(True, rospy.Duration(20.0))
 
 def clear_costmaps():
@@ -127,8 +129,201 @@ def log_and_print(point_number,point_type,(trans,rot)):
 	writer.writerow({'point_number': point_number, 'point_type': point_type, 'x': trans[0], 'y': trans[1], 'yaw': yaw})
 	print 'point_number:',point_number,'point_type:',point_type,'x:',trans[0],'y:',trans[1],'yaw:',yaw,""
 
+def pub_cmd_vel(v_x,v_theta):
+
+	msg = geometry_msgs.msg.Twist()
+	msg.linear.x = v_x
+	msg.angular.z = v_theta
+	pub.publish(msg)
+
+def move_to(x):
+	
+	dt = 0.10
+	transacc = 0.3 # 0.3 meters/sec^2
+	transvelmax = 0.75 # 0.75 meters/sec
+	threshold = 0.005 # set a 5mm tolerance for accepting the final position
+	kp = 1.20
+
+	i = 0
+
+	set_transform("odom","initial_pose",lookup_odom())
+	trans = (x,0.0,0.0)
+	rot = (0.0,0.0,0.0,1.0)
+	set_transform("initial_pose","target_x",(trans,rot))
+
+	there = False
+	slow_flag = False
+
+	while not there:
+
+		if i > 0:
+			delay = 1 + 0.5*i
+			time.sleep(delay)
+
+		set_transform("odom","base_link",lookup_odom())
+		(t,r) = get_transform("base_link","target_x")
+		dist = t[0]
+		
+		if dist < 0:
+			there = True
+
+		if abs(dist) <= threshold:
+			pub_cmd_vel(0,0)
+			print "Target Achieved"
+			there = True
+			break
+		
+		if not there:
+			x_vel = math.sqrt(dist*transacc/3)
+
+			if x_vel >= transvelmax:
+				x_vel = transvelmax
+			x_vel = x_vel/kp
+			if x_vel <= 0.001:
+				x_vel = 0.001
+			if slow_flag:
+				x_vel_actual *= 0.5
+			else:
+				x_vel_actual = x_vel
+			d_stop = (x_vel*dt)+((x_vel**2)/(2*transacc))
+			x_vel = x_vel_actual
+			print "x_vel: " + str(x_vel)
+			print "x_dist: " + str(dist)
+			print "d_stop: " + str(d_stop)
+			print "d_stop*kp: " + str(d_stop)
+
+			x_vel = x_vel/kp
+
+			rate.sleep()
+
+			trying = True
+
+			print i
+
+			while trying:
+
+				set_transform("odom","base_link",lookup_odom())
+				(t,r) = get_transform("base_link","target_x")
+				dist = t[0]
+
+				if abs(dist) <= d_stop:
+					pub_cmd_vel(0,0)
+					i += 1
+					trying = False
+				if (dist - d_stop)/x_vel <= 2*dt:
+					slow_flag = True
+					pub_cmd_vel(0,0)
+					time.sleep(1)
+					i += 1
+					trying = False
+				else:
+					pub_cmd_vel(x_vel,0)
+					rate.sleep()
+
+			rate.sleep()
+
+			if i > 10:
+				pub_cmd_vel(0,0)
+				there = True
+				print "Took too many tries, giving up"
+
+	time.sleep(3)
+	set_transform("odom","base_link",lookup_odom())
+	(t,r) = get_transform("base_link","target_x")
+	dist = t[0]
+	print "Final dist: " + str(dist)
+
+def rotate_to(theta):
+
+	dt = 0.10
+	rotacc = 100 # deg/sec^2 = 1.74533 rad/sec^2
+	rotvelmax = 100 # deg/sec^2 = 1.74533 rad/sec^2
+	kp = 1.5
+	threshold = 0.5
+
+	set_transform("odom","initial_pose",lookup_odom())
+	quat = tf.transformations.quaternion_from_euler(0.0,0.0,math.radians(theta))
+	trans = (0.0,0.0,0.0)
+	set_transform("initial_pose","target_theta",(trans,quat))
+
+	there = False
+
+	ang_vel = 0.0
+	i = 0
+
+	while not there:
+
+		if i > 0:
+			delay = 1 + 0.5*i
+			delay = min(delay,4)
+			time.sleep(delay)
+
+		set_transform("odom","base_link",lookup_odom())
+		(t,r) = get_transform("base_link","target_theta")
+		yaw_rad = r[2]
+		rot = tf.transformations.euler_from_quaternion(r)
+		yaw_deg = math.degrees(rot[2])
+		if abs(yaw_deg) <= threshold:
+			pub_cmd_vel(0,0)
+			print "Target Achieved"
+			there = True
+		sign = (yaw_deg/abs(yaw_deg))
+		ang_vel_deg = math.sqrt(abs(yaw_deg)*rotacc/3)
+		if ang_vel_deg >= rotvelmax:
+			ang_vel_deg = rotvelmax
+		if ang_vel_deg <= 0.5:
+			ang_vel_deg = 0.5
+		ang_vel_deg *= sign
+		ang_vel_deg = ang_vel_deg/kp
+		d_stop = (abs(ang_vel_deg)*dt)+((ang_vel_deg**2)/(2*rotacc))
+
+		if yaw_deg/ang_vel_deg <= 2*t:
+			ang_vel_deg *= 0.5
+
+		print "Ang_vel_rad: " + str(math.radians(ang_vel_deg))
+		print "Ang_dist_deg: " + str(yaw_deg)
+		print "d_stop: " + str(d_stop)
+
+		rate.sleep()
+
+		trying = True
+
+		print i
+
+		while trying:
+
+			set_transform("odom","base_link",lookup_odom())
+			(t,r) = get_transform("base_link","target_theta")
+			yaw_rad = r[2]
+			rot = tf.transformations.euler_from_quaternion(r)
+			yaw_deg = math.degrees(rot[2])
+
+			if abs(yaw_deg) <= d_stop:
+				pub_cmd_vel(0,0)
+				time.sleep(1)
+				i += 1
+				trying = False
+			else:
+				pub_cmd_vel(0,math.radians(ang_vel_deg))
+				rate.sleep()
+
+		rate.sleep()
+
+		if i > 10:
+				pub_cmd_vel(0,0)
+				there = True
+				print "Took too many tries, giving up"
+
+	time.sleep(3)
+	set_transform("odom","base_link",lookup_odom())
+	(t,r) = get_transform("base_link","target_theta")
+	yaw_rad = r[2]
+	rot = tf.transformations.euler_from_quaternion(r)
+	yaw_deg = math.degrees(rot[2])
+	print "Final angle: " + str(yaw_deg)
+
 #with open('test_8_camera_and_odom_return_to_zero_with_approach_modified_tolerance_and_costmap_resolution.csv', 'ab') as csvfile:
-with open('test.csv', 'ab') as csvfile:
+with open('test_8_rtz_wc_wa_cs1.csv', 'ab') as csvfile:
 	
 	fieldnames = ['point_number','point_type','x','y','yaw']
 	writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -137,7 +332,7 @@ with open('test.csv', 'ab') as csvfile:
 	initialize()
 	log_and_print(0,'initial_point',get_transform("map","origin"))
 
-	for i in range(1,3):
+	for i in range(1,21):
 
 		raw_input("Press enter to continue...")
 		x = random.uniform(-2,2)
@@ -203,15 +398,48 @@ with open('test.csv', 'ab') as csvfile:
 		# Populate tf tree with data on where robot thinks it is based on odometry
 		set_transform("origin","odom_frame",lookup_odom())
 		set_transform("odom_frame","origin_relative",get_transform("pioneer","origin"))
-
 		# Clear Costmaps again
 		clear_costmaps()
 
 		# Return to origin (point 0)
-		move_base_client(get_transform("map","origin_relative"))
+		
+		# First, rotate to face target
+		(t1,r1) = get_transform("odom_frame","origin_relative")
+		x = t1[0]
+		y = t1[1]
+		theta_rad = math.atan(y/x)
+		theta = math.degrees(theta_rad)
+		rotate_to(theta)
+		
 		time.sleep(3)
 		check_camera()
-		log_and_print(i,"camera_at_origin",get_transform("origin","pioneer"))
+		log_and_print(i,"camera_after_first_rotation",get_transform("origin","pioneer"))
+		log_and_print(i,"odom_after_first_rotation",lookup_odom())
+
+		(t2,r2) = get_transform("pioneer","origin")
+		x = t2[0]
+
+		clear_costmaps()
+		move_to(x)
+
+
+		time.sleep(3)
+		check_camera()
+		log_and_print(i,"camera_after_move_x",get_transform("origin","pioneer"))
+		log_and_print(i,"odom_after_move_x",lookup_odom())
+
+		(t3,r3) = get_transform("pioneer","origin")
+		rot = tf.transformations.euler_from_quaternion(r3)
+		theta_rad = rot[2]
+		theta = math.degrees(theta_rad)
 		
+		clear_costmaps()
+		rotate_to(theta)
+
+		time.sleep(3)
+		check_camera()
+		
+		set_transform("odom_frame","origin_relative",get_transform("pioneer","origin"))
+		log_and_print(i,"camera_at_origin",get_transform("origin","pioneer"))
 		# Log odometry information relative to origin
 		log_and_print(i,"odom_at_origin",lookup_odom())
